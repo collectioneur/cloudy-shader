@@ -163,7 +163,7 @@ export default function Triangle() {
       // ).yx;
 
       // return std.mix(tex.x, tex.y, f.z) * 2.0 - 1.0;
-      return u.y;
+      return u.y + u.x;
     });
 
     const fbm = tgpu.fn(
