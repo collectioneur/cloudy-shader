@@ -226,17 +226,17 @@ export default function Triangle() {
         if (density > 0.0) {
           let sunDirection = std.normalize(d.vec3f(1.0, 0.0, 0.0));
           let diffuse = std.clamp(
-            (scene(p) - scene(std.add(p, std.mul(0.8, sunDirection)))) / 0.8,
+            (scene(p) - scene(std.add(p, std.mul(1.0, sunDirection)))) / 1.0,
             0.0,
             1.0
           );
-          diffuse = std.mix(0.5, 1.0, diffuse);
+          diffuse = std.mix(0.3, 1.0, diffuse);
           let lin = std.add(
-            std.mul(d.vec3f(0.6, 0.5, 0.75), 1.1),
-            std.mul(d.vec3f(1.0, 0.7, 0.3), diffuse * 0.8)
+            std.mul(d.vec3f(0.6, 0.45, 0.75), 1.1),
+            std.mul(d.vec3f(1.0, 0.7, 0.3), diffuse * 0.7)
           );
           let color = d.vec4f(
-            std.mix(d.vec3f(1.0, 1.0, 1.0), d.vec3f(0.0, 0.0, 0.0), density),
+            std.mix(d.vec3f(1.0, 1.0, 1.0), d.vec3f(0.2, 0.2, 0.2), density),
             density
           );
           color = d.vec4f(
@@ -266,6 +266,7 @@ export default function Triangle() {
         let lightPos = d.vec3f(2.0, 0.0, -3.0);
         let new_uv = (uv - 0.5) * 2.0;
         new_uv.y *= h.$ / w.$;
+        let sunDirection = std.normalize(d.vec3f(1.0, 0.0, 0.0));
         // let ro = d.vec3f(
         //   std.cos(time.$),
         //   std.cos(time.$ * 4),
@@ -273,13 +274,18 @@ export default function Triangle() {
         // );
         let ro = d.vec3f(0.0, 0.0, -3.0);
         let rd = std.normalize(d.vec3f(new_uv.xy, 1.0));
+        let sun = std.clamp(std.dot(rd, sunDirection), 0.0, 1.0);
 
-        let color = d.vec3f(0.7, 0.7, 0.9);
-        color -= 0.3 * d.vec3f(1, 0.85, 0.48) * rd.y;
-        // color += 0.5 * d.vec3f(1.0,0.5,0.3) * pow(sun, 10.0);
+        let color = d.vec3f(0.75, 0.66, 0.9);
+        color -= 0.35 * d.vec3f(1, 0.7, 0.43) * rd.y;
+
+        color += d.vec3f(1.0, 0.37, 0.17) * std.pow(sun, 5.0);
 
         let res = raymarch(ro, rd);
         color = color * (1.1 - res.a) + res.rgb;
+
+        // color = std.pow(color, d.vec3f(0.75));
+
         // color = std.mix(color, res.xyz, res.w);
 
         return d.vec4f(color, 1.0);
