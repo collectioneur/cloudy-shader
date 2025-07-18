@@ -6,10 +6,16 @@ import * as d from "typegpu/data";
 import * as std from "typegpu/std";
 import { noiseTexture } from "./noiseTexture";
 
-const MAX_ITERATIONS = 100;
-const MAX_DIST = 100.0;
-const SURFACE_DIST = 0.01;
-const MARCH_SIZE = 0.05;
+const MAX_ITERATIONS = 120; // 50 - 200
+const MARCH_SIZE = 0.05; // 0.05 - 0.15
+const SUN_DIRECTION = d.vec3f(1.0, 0.0, 0.0); // [-1.0, -1.0, -1.0] - [1.0, 1.0, 1.0]
+const ANGLE_DISTORTION = 1.0; // 0.1 - 3.0
+const SUN_INTENSITY = 0.7; // 0.01 - 1.0
+const LIGHT_ABSORBTION = 0.88; // 0.0 - 1.0
+const CLOUD_DENSITY = 0.6; // 0.0 - 1.0
+const CLOUD_CORE_DENSITY = 1.0; //0.0 - 10.0
+const FLIGHT_SPEED = 3.0; // 1.0 - 10.0
+const CLOUD_DETALIZATION = 1.8; // 0.0 - 4.0
 
 const mainVertex = tgpu["~unstable"].vertexFn({
   in: { vertexIndex: d.builtin.vertexIndex },
@@ -48,9 +54,6 @@ export default function Triangle() {
   const imageSampler = device?.createSampler({
     magFilter: "linear",
     minFilter: "linear",
-    addressModeU: "repeat",
-    addressModeV: "repeat",
-    addressModeW: "repeat",
   });
   const [imageTexture, setImageTexture] = useState<
     (TgpuTexture & Sampled & Render) | undefined
@@ -62,7 +65,6 @@ export default function Triangle() {
     }
 
     async function init(root: TgpuRoot) {
-      console.log("Initializing TypeGPU...");
       const response = await fetch(noiseTexture);
       const imageBitmap = await createImageBitmap(await response.blob());
       const [srcWidth, srcHeight] = [imageBitmap.width, imageBitmap.height];
@@ -128,26 +130,6 @@ export default function Triangle() {
       minFilter: "linear",
     });
 
-    const getNormal = tgpu.fn(
-      [d.vec3f],
-      d.vec3f
-    )((p) => {
-      let e = d.vec2f(0.01, 0.0);
-      let xyy = d.vec3f(e.x, e.y, e.y);
-      let yxy = d.vec3f(e.y, e.x, e.y);
-      let yyx = d.vec3f(e.y, e.y, e.x);
-
-      let n = std.sub(
-        scene(p),
-        d.vec3f(
-          scene(std.sub(p, xyy)),
-          scene(std.sub(p, yxy)),
-          scene(std.sub(p, yyx))
-        )
-      );
-      return std.normalize(n);
-    });
-
     const noise = tgpu.fn(
       [d.vec3f],
       d.f32
@@ -169,7 +151,6 @@ export default function Triangle() {
       ).yx;
 
       return std.mix(tex.x, tex.y, f.z) * 2.0 - 1.0;
-      // return u.x;
     });
 
     const fbm = tgpu.fn(
@@ -178,11 +159,11 @@ export default function Triangle() {
     )((p) => {
       let q = std.add(
         p,
-        d.vec3f(std.sin(time.$), std.cos(time.$), time.$ * 3.0)
+        d.vec3f(std.sin(time.$), std.cos(time.$), time.$ * FLIGHT_SPEED)
       );
       let f = d.f32(0.0);
-      let scale = d.f32(1.0);
-      let factor = d.f32(1.8);
+      let scale = d.f32(CLOUD_CORE_DENSITY);
+      let factor = d.f32(CLOUD_DETALIZATION);
 
       for (let i = 0; i < 4; i++) {
         f += noise(q) * scale;
@@ -193,27 +174,18 @@ export default function Triangle() {
       return f;
     });
 
-    const sdSphere = tgpu.fn(
-      [d.vec3f, d.f32],
-      d.f32
-    )((p, r) => {
-      return std.length(p) - r;
-    });
-
     const scene = tgpu.fn(
       [d.vec3f],
       d.f32
     )((p) => {
-      let distance = sdSphere(p, 2.0);
-
       let f = fbm(p);
-      return f - 0.5;
+      return f - 1.5 + CLOUD_DENSITY * 2.0;
     });
 
     const raymarch = tgpu.fn(
-      [d.vec3f, d.vec3f],
+      [d.vec3f, d.vec3f, d.vec3f],
       d.vec4f
-    )((ro, rd) => {
+    )((ro, rd, sunDirection) => {
       let res = d.vec4f(0.0, 0.0, 0.0, 0.0);
       let transparency = 0.0;
       let hash = std.fract(
@@ -224,16 +196,15 @@ export default function Triangle() {
         let p = std.add(ro, std.mul(rd, depth));
         let density = std.clamp(scene(p), 0.0, 1.0);
         if (density > 0.0) {
-          let sunDirection = std.normalize(d.vec3f(1.0, 0.0, 0.0));
           let diffuse = std.clamp(
-            (scene(p) - scene(std.add(p, std.mul(1.0, sunDirection)))) / 1.0,
+            scene(p) - scene(std.add(p, sunDirection)),
             0.0,
             1.0
           );
           diffuse = std.mix(0.3, 1.0, diffuse);
           let lin = std.add(
             std.mul(d.vec3f(0.6, 0.45, 0.75), 1.1),
-            std.mul(d.vec3f(1.0, 0.7, 0.3), diffuse * 0.7)
+            std.mul(d.vec3f(1.0, 0.7, 0.3), diffuse * SUN_INTENSITY)
           );
           let color = d.vec4f(
             std.mix(d.vec3f(1.0, 1.0, 1.0), d.vec3f(0.2, 0.2, 0.2), density),
@@ -251,7 +222,7 @@ export default function Triangle() {
             color.z * color.w,
             color.w
           );
-          res = std.add(res, std.mul(color, 0.88 - res.w));
+          res = std.add(res, std.mul(color, LIGHT_ABSORBTION - res.w));
         }
         depth += MARCH_SIZE;
       }
@@ -263,42 +234,28 @@ export default function Triangle() {
       out: d.vec4f,
     })(({ uv }) => {
       {
-        let lightPos = d.vec3f(2.0, 0.0, -3.0);
         let new_uv = (uv - 0.5) * 2.0;
         new_uv.y *= h.$ / w.$;
-        let sunDirection = std.normalize(d.vec3f(1.0, 0.0, 0.0));
-        // let ro = d.vec3f(
-        //   std.cos(time.$),
-        //   std.cos(time.$ * 4),
-        //   -std.abs(std.sin(time.$ * 4)) * 5.0 - 1.0
-        // );
+        let sunDirection = std.normalize(SUN_DIRECTION);
         let ro = d.vec3f(0.0, 0.0, -3.0);
-        let rd = std.normalize(d.vec3f(new_uv.xy, 1.0));
+        let rd = std.normalize(d.vec3f(new_uv.xy, ANGLE_DISTORTION));
         let sun = std.clamp(std.dot(rd, sunDirection), 0.0, 1.0);
 
         let color = d.vec3f(0.75, 0.66, 0.9);
+
         color -= 0.35 * d.vec3f(1, 0.7, 0.43) * rd.y;
 
-        color += d.vec3f(1.0, 0.37, 0.17) * std.pow(sun, 5.0);
+        color +=
+          d.vec3f(1.0, 0.37, 0.17) *
+          std.pow(sun, 1.0 / (SUN_INTENSITY * SUN_INTENSITY * SUN_INTENSITY));
 
-        let res = raymarch(ro, rd);
+        let res = raymarch(ro, rd, sunDirection);
+
         color = color * (1.1 - res.a) + res.rgb;
-
-        // color = std.pow(color, d.vec3f(0.75));
-
-        // color = std.mix(color, res.xyz, res.w);
 
         return d.vec4f(color, 1.0);
       }
     });
-
-    // const mainFragment = tgpu["~unstable"].fragmentFn({
-    //   in: { uv: d.vec2f },
-    //   out: d.vec4f,
-    // })/* wgsl */ `{
-    //   let color = textureSample(sampledView, sampler, in.uv).rgb;
-    //   return vec4f(color, 1.0);
-    // }`.$uses({ sampledView, sampler });
 
     const pipeline = root["~unstable"]
       .withVertex(mainVertex, {})
@@ -309,7 +266,7 @@ export default function Triangle() {
     let frameId: number;
 
     const render = () => {
-      const timestamp = (performance.now() - startTime) / 1000;
+      const timestamp = ((performance.now() - startTime) / 1000) % 500.0;
       time.write(timestamp);
 
       const view = context.getCurrentTexture().createView();
