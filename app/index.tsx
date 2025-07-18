@@ -248,11 +248,14 @@ export default function Clouds() {
       .withFragment(mainFragment, { format: presentationFormat })
       .createPipeline();
 
-    const startTime = performance.now();
+    let startTime = performance.now();
     let frameId: number;
 
     const render = () => {
-      const timestamp = ((performance.now() - startTime) / 1000) % 500.0;
+      const timestamp = (performance.now() - startTime) / 1000;
+      if (timestamp > 500.0) {
+        startTime = performance.now();
+      }
       time.write(timestamp);
 
       const view = context.getCurrentTexture().createView();
