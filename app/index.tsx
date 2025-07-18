@@ -251,7 +251,7 @@ export default function Triangle() {
             color.z * color.w,
             color.w
           );
-          res = std.add(res, std.mul(color, 0.9 - res.w));
+          res = std.add(res, std.mul(color, 0.88 - res.w));
         }
         depth += MARCH_SIZE;
       }
