@@ -6,10 +6,10 @@ import * as d from "typegpu/data";
 import * as std from "typegpu/std";
 import { noiseTexture } from "./noiseTexture";
 
-const MAX_ITERATIONS = 50;
+const MAX_ITERATIONS = 100;
 const MAX_DIST = 100.0;
 const SURFACE_DIST = 0.01;
-const MARCH_SIZE = 3.0;
+const MARCH_SIZE = 0.05;
 
 const mainVertex = tgpu["~unstable"].vertexFn({
   in: { vertexIndex: d.builtin.vertexIndex },
@@ -28,26 +28,6 @@ const mainVertex = tgpu["~unstable"].vertexFn({
   );
   return Out(vec4f(pos[in.vertexIndex], 0.0, 1.0), uv[in.vertexIndex]);
 }`;
-
-// const getNormal = tgpu.fn(
-//   [d.vec3f],
-//   d.vec3f
-// )((p) => {
-//   let e = d.vec2f(0.01, 0.0);
-//   let xyy = d.vec3f(e.x, e.y, e.y);
-//   let yxy = d.vec3f(e.y, e.x, e.y);
-//   let yyx = d.vec3f(e.y, e.y, e.x);
-
-//   let n = std.sub(
-//     scene(p),
-//     d.vec3f(
-//       scene(std.sub(p, xyy)),
-//       scene(std.sub(p, yxy)),
-//       scene(std.sub(p, yyx))
-//     )
-//   );
-//   return std.normalize(n);
-// });
 
 export default function Triangle() {
   const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
@@ -68,6 +48,9 @@ export default function Triangle() {
   const imageSampler = device?.createSampler({
     magFilter: "linear",
     minFilter: "linear",
+    addressModeU: "repeat",
+    addressModeV: "repeat",
+    addressModeW: "repeat",
   });
   const [imageTexture, setImageTexture] = useState<
     (TgpuTexture & Sampled & Render) | undefined
@@ -145,6 +128,26 @@ export default function Triangle() {
       minFilter: "linear",
     });
 
+    const getNormal = tgpu.fn(
+      [d.vec3f],
+      d.vec3f
+    )((p) => {
+      let e = d.vec2f(0.01, 0.0);
+      let xyy = d.vec3f(e.x, e.y, e.y);
+      let yxy = d.vec3f(e.y, e.x, e.y);
+      let yyx = d.vec3f(e.y, e.y, e.x);
+
+      let n = std.sub(
+        scene(p),
+        d.vec3f(
+          scene(std.sub(p, xyy)),
+          scene(std.sub(p, yxy)),
+          scene(std.sub(p, yyx))
+        )
+      );
+      return std.normalize(n);
+    });
+
     const noise = tgpu.fn(
       [d.vec3f],
       d.f32
@@ -152,35 +155,40 @@ export default function Triangle() {
       let p = std.floor(x);
       let f = std.fract(x);
 
-      let u = f * f * (3.0 - 2.0 * f);
+      f = std.mul(std.mul(f, f), std.sub(3.0, std.mul(2.0, f)));
 
-      // let uv = p.xy + std.mul(d.vec2f(37.0, 239.0), p.z) + u.xy;
-      // let tex = std.textureSampleLevel(
-      //   sampledView,
-      //   sampler,
-      //   (uv + 0.5) / 256.0,
-      //   0.0
-      // ).yx;
+      let uv = std.add(
+        std.add(p.xy, std.mul(d.vec2f(37.0, 239.0), d.vec2f(p.z, p.z))),
+        f.xy
+      );
+      let tex = std.textureSampleLevel(
+        sampledView,
+        sampler,
+        std.fract(std.div(std.add(uv, d.vec2f(0.5, 0.5)), 256.0)),
+        0.0
+      ).yx;
 
-      // return std.mix(tex.x, tex.y, f.z) * 2.0 - 1.0;
-      return u.y + u.x;
+      return std.mix(tex.x, tex.y, f.z) * 2.0 - 1.0;
+      // return u.x;
     });
 
     const fbm = tgpu.fn(
       [d.vec3f],
       d.f32
     )((p) => {
-      let q = std.add(p, time.$);
-      let g = noise(q);
+      let q = std.add(
+        p,
+        d.vec3f(std.sin(time.$), std.cos(time.$), time.$ * 3.0)
+      );
       let f = d.f32(0.0);
-      let scale = d.f32(0.5);
-      let factor = d.f32(2.02);
+      let scale = d.f32(1.0);
+      let factor = d.f32(1.8);
 
-      for (let i = 0; i < 6; i++) {
+      for (let i = 0; i < 4; i++) {
         f += noise(q) * scale;
         q = std.mul(q, factor);
-        scale *= 0.5;
-        factor += 0.21;
+        scale *= 0.4;
+        factor += 0.5;
       }
       return f;
     });
@@ -199,22 +207,51 @@ export default function Triangle() {
       let distance = sdSphere(p, 2.0);
 
       let f = fbm(p);
-      return -distance + f;
+      return f - 0.5;
     });
 
     const raymarch = tgpu.fn(
       [d.vec3f, d.vec3f],
-      d.vec3f
+      d.vec4f
     )((ro, rd) => {
-      let depth = d.f32(0.0);
-      let res = d.vec3f(0.0, 0.0, 0.0);
+      let res = d.vec4f(0.0, 0.0, 0.0, 0.0);
       let transparency = 0.0;
+      let hash = std.fract(
+        std.sin(std.dot(rd.xy, d.vec2f(12.9898, 78.233))) * 43758.5453
+      );
+      let depth = hash * MARCH_SIZE;
       for (let i = 0; i < MAX_ITERATIONS; i++) {
         let p = std.add(ro, std.mul(rd, depth));
-        let density = scene(p);
+        let density = std.clamp(scene(p), 0.0, 1.0);
         if (density > 0.0) {
-          let color = -1.0 / (density + 1.0) + 1.0;
-          res = d.vec3f(color, color, color);
+          let sunDirection = std.normalize(d.vec3f(1.0, 0.0, 0.0));
+          let diffuse = std.clamp(
+            (scene(p) - scene(std.add(p, std.mul(0.8, sunDirection)))) / 0.8,
+            0.0,
+            1.0
+          );
+          diffuse = std.mix(0.5, 1.0, diffuse);
+          let lin = std.add(
+            std.mul(d.vec3f(0.6, 0.5, 0.75), 1.1),
+            std.mul(d.vec3f(1.0, 0.7, 0.3), diffuse * 0.8)
+          );
+          let color = d.vec4f(
+            std.mix(d.vec3f(1.0, 1.0, 1.0), d.vec3f(0.0, 0.0, 0.0), density),
+            density
+          );
+          color = d.vec4f(
+            color.x * lin.x,
+            color.y * lin.y,
+            color.z * lin.z,
+            color.w
+          );
+          color = d.vec4f(
+            color.x * color.w,
+            color.y * color.w,
+            color.z * color.w,
+            color.w
+          );
+          res = std.add(res, std.mul(color, 0.9 - res.w));
         }
         depth += MARCH_SIZE;
       }
@@ -226,31 +263,26 @@ export default function Triangle() {
       out: d.vec4f,
     })(({ uv }) => {
       {
-        let lightPos = d.vec3f(0.0, 0.0, -5.0);
+        let lightPos = d.vec3f(2.0, 0.0, -3.0);
         let new_uv = (uv - 0.5) * 2.0;
         new_uv.y *= h.$ / w.$;
-
         // let ro = d.vec3f(
         //   std.cos(time.$),
         //   std.cos(time.$ * 4),
         //   -std.abs(std.sin(time.$ * 4)) * 5.0 - 1.0
         // );
         let ro = d.vec3f(0.0, 0.0, -3.0);
-        let rd = std.normalize(d.vec3f(new_uv, 1.0));
+        let rd = std.normalize(d.vec3f(new_uv.xy, 1.0));
+
+        let color = d.vec3f(0.7, 0.7, 0.9);
+        color -= 0.3 * d.vec3f(1, 0.85, 0.48) * rd.y;
+        // color += 0.5 * d.vec3f(1.0,0.5,0.3) * pow(sun, 10.0);
 
         let res = raymarch(ro, rd);
+        color = color * (1.1 - res.a) + res.rgb;
+        // color = std.mix(color, res.xyz, res.w);
 
-        // let p = std.add(ro, std.mul(rd, dist));
-        // let color: d.Vec3f = d.vec3f(0.0, 0.0, 0.0);
-
-        // if (dist < MAX_DIST) {
-        //   let normal = getNormal(p);
-        //   let lightDir = std.normalize(std.sub(lightPos, p));
-        //   let diff = std.max(0.0, std.dot(normal, lightDir));
-        //   color = std.mul(diff, palette(dist / 10.0));
-        //   // color = d.vec3f(1.0, 1.0, 1.0);
-        // }
-        return d.vec4f(res, 1.0);
+        return d.vec4f(color, 1.0);
       }
     });
 
