@@ -41,3 +41,6 @@ app-example
 # ios/android
 ios/
 android/
+
+#other shaders
+other_shaders/

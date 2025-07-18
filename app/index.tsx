@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Dimensions, GestureResponderEvent, View } from "react-native";
+import { Dimensions } from "react-native";
 import { Canvas, useDevice, useGPUContext } from "react-native-wgpu";
-import tgpu, { Render, Sampled, TgpuRoot, TgpuTexture } from "typegpu";
+import tgpu, {
+  Render,
+  Sampled,
+  TgpuRoot,
+  TgpuSampledTexture,
+  TgpuTexture,
+} from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
 import { noiseTexture } from "./noiseTexture";
@@ -15,7 +21,7 @@ const LIGHT_ABSORBTION = 0.88; // 0.0 - 1.0
 const CLOUD_DENSITY = 0.6; // 0.0 - 1.0
 const CLOUD_CORE_DENSITY = 1.0; //0.0 - 10.0
 const FLIGHT_SPEED = 3.0; // 1.0 - 10.0
-const CLOUD_DETALIZATION = 1.8; // 0.0 - 4.0
+const CLOUD_DETALIZATION = 2.23; // 0.0 - 4.0
 
 const mainVertex = tgpu["~unstable"].vertexFn({
   in: { vertexIndex: d.builtin.vertexIndex },
@@ -35,7 +41,7 @@ const mainVertex = tgpu["~unstable"].vertexFn({
   return Out(vec4f(pos[in.vertexIndex], 0.0, 1.0), uv[in.vertexIndex]);
 }`;
 
-export default function Triangle() {
+export default function Clouds() {
   const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
   const { device = null } = useDevice();
   const root = useMemo(
@@ -48,9 +54,6 @@ export default function Triangle() {
   const { width, height } = Dimensions.get("window");
   const w = useMemo(() => root?.createUniform(d.f32) ?? null, [root]);
   const h = useMemo(() => root?.createUniform(d.f32) ?? null, [root]);
-  const finger = useMemo(() => root?.createUniform(d.vec2f) ?? null, [root]);
-  const panFinger = useRef([-1, -1]);
-  const panChange = useRef([0.0, 0.0]);
   const imageSampler = device?.createSampler({
     magFilter: "linear",
     minFilter: "linear",
@@ -88,29 +91,6 @@ export default function Triangle() {
     init(root);
   }, [root]);
 
-  const handleTouchMove = (e: GestureResponderEvent) => {
-    const touch = e.nativeEvent.touches[0];
-    const { locationX, locationY, pageX, pageY } = touch;
-    if (panFinger.current[0] !== -1) {
-      const dx = locationX - panFinger.current[0];
-      const dy = locationY - panFinger.current[1];
-      panChange.current = [
-        panChange.current[0] + dx,
-        Math.min(Math.max(-height * 3, panChange.current[1] + dy), height * 3),
-      ];
-      console.log("Pan change:", -panChange.current[1] / height);
-      finger?.write(
-        d.vec2f(panChange.current[0] / width, -panChange.current[1] / height)
-      );
-    }
-    panFinger.current = [locationX, locationY];
-  };
-
-  const handleEndTouch = () => {
-    console.log("Touch ended");
-    panFinger.current = [-1, -1];
-  };
-
   useEffect(() => {
     if (!root || !device || !context) return;
     if (!imageTexture) return;
@@ -124,7 +104,9 @@ export default function Triangle() {
       alphaMode: "premultiplied",
     });
 
-    const sampledView = imageTexture.createView("sampled");
+    const sampledView = imageTexture.createView(
+      "sampled"
+    ) as TgpuSampledTexture<"2d", d.F32>;
     const sampler = tgpu["~unstable"].sampler({
       magFilter: "linear",
       minFilter: "linear",
@@ -234,24 +216,28 @@ export default function Triangle() {
       out: d.vec4f,
     })(({ uv }) => {
       {
-        let new_uv = (uv - 0.5) * 2.0;
-        new_uv.y *= h.$ / w.$;
+        let new_uv = std.mul(std.sub(uv, 0.5), 2.0);
+        new_uv = d.vec2f(new_uv.x, new_uv.y * (h.$ / w.$));
         let sunDirection = std.normalize(SUN_DIRECTION);
         let ro = d.vec3f(0.0, 0.0, -3.0);
-        let rd = std.normalize(d.vec3f(new_uv.xy, ANGLE_DISTORTION));
+        let rd = std.normalize(d.vec3f(new_uv.x, new_uv.y, ANGLE_DISTORTION));
         let sun = std.clamp(std.dot(rd, sunDirection), 0.0, 1.0);
 
         let color = d.vec3f(0.75, 0.66, 0.9);
 
-        color -= 0.35 * d.vec3f(1, 0.7, 0.43) * rd.y;
+        color = std.sub(color, std.mul(0.35 * rd.y, d.vec3f(1, 0.7, 0.43)));
 
-        color +=
-          d.vec3f(1.0, 0.37, 0.17) *
-          std.pow(sun, 1.0 / (SUN_INTENSITY * SUN_INTENSITY * SUN_INTENSITY));
+        color = std.add(
+          color,
+          std.mul(
+            d.vec3f(1.0, 0.37, 0.17),
+            std.pow(sun, 1.0 / std.pow(SUN_INTENSITY, 3.0))
+          )
+        );
 
         let res = raymarch(ro, rd, sunDirection);
 
-        color = color * (1.1 - res.a) + res.rgb;
+        color = std.add(std.mul(color, 1.1 - res.w), res.xyz);
 
         return d.vec4f(color, 1.0);
       }
@@ -292,13 +278,5 @@ export default function Triangle() {
     };
   }, [device, context, imageTexture]);
 
-  return (
-    <View
-      style={{ flex: 1, backgroundColor: "red" }}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleEndTouch}
-    >
-      <Canvas ref={ref} style={{ flex: 1, backgroundColor: "black" }} />
-    </View>
-  );
+  return <Canvas ref={ref} style={{ flex: 1 }} />;
 }
